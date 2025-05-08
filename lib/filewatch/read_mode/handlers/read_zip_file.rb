@@ -12,15 +12,26 @@ module FileWatch module ReadMode module Handlers
 
   class ReadZipFile < Base
     def handle_specifically(watched_file)
-      add_or_update_sincedb_collection(watched_file) unless sincedb_collection.member?(watched_file.sincedb_key)
-      # can't really stripe read a zip file, its all or nothing.
+      key = watched_file.sincedb_key
+      # --- ① 既に最後まで読んでいるならスキップ ---
+      if sincedb_collection.member?(key)
+        entry = sincedb_collection.get(key)
+        # entry.position に前回読み込んだバイト数が入っている想定
+        if entry.position >= watched_file.stat.size
+          logger.debug? && logger.debug("Skipping already processed gzip file", path: watched_file.path)
+          watched_file.unwatch
+          return false
+        end
+      else
+        add_or_update_sincedb_collection(watched_file)
+      end
+
       watched_file.listener.opened
+      # can't really stripe read a zip file, its all or nothing.
       # what do we do about quit when we have just begun reading the zipped file (e.g. pipeline reloading)
       # should we track lines read in the sincedb and
       # fast forward through the lines until we reach unseen content?
       # meaning that we can quit in the middle of a zip file
-      key = watched_file.sincedb_key
-
       if @settings.check_archive_validity && corrupted?(watched_file)
         watched_file.unwatch
       else
@@ -43,6 +54,7 @@ module FileWatch module ReadMode module Handlers
                        :message => e.message, :backtrace => e.backtrace)
           watched_file.listener.error
         else
+          # --- ② 読み切った位置を sincedb に記録 ---
           sincedb_collection.store_last_read(key, watched_file.last_stat_size)
           sincedb_collection.request_disk_flush
           watched_file.listener.deleted
@@ -55,7 +67,7 @@ module FileWatch module ReadMode module Handlers
           close_and_ignore_ioexception(file_stream) unless file_stream.nil?
         end
       end
-      sincedb_collection.clear_watched_file(key)
+      # ※ clear_watched_file は sincedb エントリを消してしまうため削除
     end
 
     private
@@ -90,3 +102,4 @@ module FileWatch module ReadMode module Handlers
     end
   end
 end end end
+
